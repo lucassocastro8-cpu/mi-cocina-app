@@ -1,90 +1,70 @@
 import streamlit as st
 import pandas as pd
 import requests
-import json
 
 # Configuración visual de la aplicación
 st.set_page_config(page_title="Nuestra Cocina Sincronizada", page_icon="🍳", layout="centered")
 
-# ==========================================
-# 🗺️ SISTEMA DE EMPAREJAMIENTO POR URL
-# ==========================================
-# Revisamos si ya existe un código de cocina en el link del navegador
-if "id" in st.query_params:
-    bucket_id = st.query_params["id"]
-else:
-    bucket_id = None
+# --- CONEXIÓN DIRECTA A TU BASE DE DATOS REAL (FIREBASE) ---
+# Buscamos la URL de forma segura en los Secrets de Streamlit
+URL_BASE_FIREBASE = st.secrets.get("FIREBASE_URL", "https://CAMBIA_ESTO_POR_TU_URL.firebaseio.com/")
 
-# Si es la primera vez absoluta y no hay ID, generamos uno oficial en la nube
-if not bucket_id:
-    st.info("🚀 Creando tu espacio de cocina seguro y permanente en la nube...")
+# Nos aseguramos de que la URL termine en barra diagonal
+if not URL_BASE_FIREBASE.endswith("/"):
+    URL_BASE_FIREBASE += "/"
+
+URL_ALACENA = f"{URL_BASE_FIREBASE}alacena.json"
+URL_RECETAS = f"{URL_BASE_FIREBASE}recetas.json"
+
+# --- FUNCIONES DE LECTURA Y ESCRITURA EN TIEMPO REAL ---
+def cargar_alacena():
     try:
-        # Solicitamos un identificador real y libre a kvdb.io
-        crear_bucket = requests.post("https://kvdb.io/new", timeout=5)
-        if crear_bucket.status_code == 200:
-            bucket_id = crear_bucket.text.strip()
-            # Guardamos el ID en la URL del navegador
-            st.query_params["id"] = bucket_id
-            
-            # Valores iniciales de muestra por única vez
-            alacena_inicial = {"Arroz": 1000, "Fideos": 500, "Puré de Tomate": 2, "Cebolla": 4, "Carne Picada": 500}
-            recetas_iniciales = {
-                "Fideos con Tuco": {"Fideos": 250, "Puré de Tomate": 1, "Cebolla": 1},
-                "Arroz con Carne": {"Arroz": 200, "Carne Picada": 300, "Cebolla": 1}
-            }
-            # Subir configuración inicial
-            requests.put(f"https://kvdb.io/{bucket_id}/alacena", data=json.dumps(alacena_inicial))
-            requests.put(f"https://kvdb.io/{bucket_id}/recetas", data=json.dumps(recetas_iniciales))
-            st.success("¡Cocina en la nube activada!")
-            st.rerun()
+        res = requests.get(URL_ALACENA, timeout=5)
+        if res.status_code == 200 and res.json() is not None:
+            return res.json()
+    except:
+        pass
+    # Si la base de datos está vacía (primera vez absoluta), la inicializamos
+    inicial = {"Arroz": 1000, "Fideos": 500, "Puré de Tomate": 2, "Cebolla": 4, "Carne Picada": 500}
+    requests.put(URL_ALACENA, json=inicial, timeout=5)
+    return inicial
+
+def guardar_alacena(datos):
+    try:
+        requests.put(URL_ALACENA, json=datos, timeout=5)
     except Exception as e:
-        st.error(f"Error al inicializar la base de datos: {e}")
-        st.stop()
+        st.error(f"Error de red al guardar alacena: {e}")
 
-# Definimos las rutas finales con tu ID único guardado en el link
-URL_ALACENA = f"https://kvdb.io/{bucket_id}/alacena"
-URL_RECETAS = f"https://kvdb.io/{bucket_id}/recetas"
-
-# --- FUNCIONES DE ALTA FIABILIDAD ---
-def cargar_alacena_nube():
+def cargar_recetas():
     try:
-        respuesta = requests.get(URL_ALACENA, timeout=5)
-        if respuesta.status_code == 200: return json.loads(respuesta.text)
-    except: pass
-    return {}
+        res = requests.get(URL_RECETAS, timeout=5)
+        if res.status_code == 200 and res.json() is not None:
+            return res.json()
+    except:
+        pass
+    # Recetas iniciales de fábrica
+    inicial = {
+        "Fideos con Tuco": {"Fideos": 250, "Puré de Tomate": 1, "Cebolla": 1},
+        "Arroz con Carne": {"Arroz": 200, "Carne Picada": 300, "Cebolla": 1}
+    }
+    requests.put(URL_RECETAS, json=inicial, timeout=5)
+    return inicial
 
-def guardar_alacena_nube(datos):
-    try: requests.put(URL_ALACENA, data=json.dumps(datos), timeout=5)
-    except: st.error("Error temporal de red al guardar en la alacena.")
-
-def cargar_recetas_nube():
+def guardar_recetas(datos):
     try:
-        respuesta = requests.get(URL_RECETAS, timeout=5)
-        if respuesta.status_code == 200: return json.loads(respuesta.text)
-    except: pass
-    return {}
+        requests.put(URL_RECETAS, json=datos, timeout=5)
+    except Exception as e:
+        st.error(f"Error de red al guardar recetas: {e}")
 
-def guardar_recetas_nube(datos):
-    try: requests.put(URL_RECETAS, data=json.dumps(datos), timeout=5)
-    except: st.error("Error temporal de red al guardar las recetas.")
+# --- TRAER DATOS FRESCOS DE GOOGLE EN CADA CLIC ---
+alacena_data = cargar_alacena()
+recetas_data = cargar_recetas()
 
-# --- CONTROL DE SESIÓN AUTOMÁTICO (F5 PROTECTION) ---
-if "alacena_data" not in st.session_state or st.sidebar.button("🔄 Forzar Sincronización"):
-    st.session_state.alacena_data = cargar_alacena_nube()
+# Formatear la tabla para la pestaña de inventario
+df_alacena = pd.DataFrame(list(alacena_data.items()), columns=["Ingrediente", "Cantidad"])
 
-if "recetas_data" not in st.session_state:
-    st.session_state.recetas_data = cargar_recetas_nube()
-
-# Formatear datos de la alacena
-df_alacena = pd.DataFrame(list(st.session_state.alacena_data.items()), columns=["Ingrediente", "Cantidad"])
-
-# Títulos principales
 st.title("🍳 Nuestra Cocina Sincronizada")
-
-# Cuadro informativo de emparejamiento para el usuario
-with st.expander("🔗 LINK COMPARTIDO PARA TU NOVIA (Toca aquí)"):
-    st.write("Para que tu novia vea exactamente tus mismos ingredientes y recetas, compartile el enlace completo que aparece arriba en tu navegador. Tiene que incluir el código del final.")
-    st.code(f"https://share.streamlit.io/ (Tu enlace de la app) /?id={bucket_id}")
+st.write("Conectado a una base de datos real. ¡Inmortal y compartida en la nube!")
 
 # Pestañas de la aplicación
 tab_cocina, tab_recetas, tab_alacena = st.tabs(["🍳 Cocinar Hoy", "📖 Recetas Compartidas", "📦 Alacena Compartida"])
@@ -94,17 +74,17 @@ tab_cocina, tab_recetas, tab_alacena = st.tabs(["🍳 Cocinar Hoy", "📖 Receta
 # ==========================================
 with tab_cocina:
     st.header("🍳 ¿Qué preparamos para comer?")
-    opciones_recetas = sorted(list(st.session_state.recetas_data.keys()))
+    opciones = sorted(list(recetas_data.keys()))
     
-    if opciones_recetas:
-        receta_elegida = st.selectbox("Elegir menú:", opciones_recetas)
-        ingredientes_necesarios = st.session_state.recetas_data[receta_elegida]
+    if opciones:
+        receta_elegida = st.selectbox("Elegir menú:", opciones)
+        ingredientes_necesarios = recetas_data[receta_elegida]
         
         st.subheader("📋 Verificación de Stock")
         puede_cocinar = True
         
         for ing, cant_req in ingredientes_necesarios.items():
-            cant_disponible = st.session_state.alacena_data.get(ing, 0)
+            cant_disponible = alacena_data.get(ing, 0)
             if cant_disponible >= cant_req:
                 st.write(f"✅ **{ing}**: Necesitas {cant_req} | Tienes {cant_disponible}")
             else:
@@ -115,10 +95,10 @@ with tab_cocina:
         if puede_cocinar:
             if st.button("🍽️ ¡Hecho! Cocinado", type="primary"):
                 for ing, cant_req in ingredientes_necesarios.items():
-                    st.session_state.alacena_data[ing] -= cant_req
-                guardar_alacena_nube(st.session_state.alacena_data)
+                    alacena_data[ing] -= cant_req
+                guardar_alacena(alacena_data)
                 st.balloons()
-                st.success("¡Buen provecho! El stock se descontó de la nube para ambos.")
+                st.success("¡Buen provecho! El stock se descontó de la base de datos.")
                 st.rerun()
         else:
             st.error("Faltan ingredientes en la Alacena para este plato.")
@@ -129,21 +109,22 @@ with tab_cocina:
 # 2. PESTAÑA: RECETAS
 # ==========================================
 with tab_recetas:
-    st.header("📖 Recetario en la Nube")
+    st.header("📖 Recetario en la Base de Datos")
     
-    for nombre_r, ing_r in sorted(st.session_state.recetas_data.items()):
+    for nombre_r, ing_r in sorted(recetas_data.items()):
         with st.expander(f"🍴 {nombre_r}"):
+            st.write("**Ingredientes necesarios:**")
             for ing, cant in ing_r.items():
                 st.write(f"- {ing}: {cant}")
             if st.button(f"🗑️ Eliminar {nombre_r}", key=f"del_{nombre_r}"):
-                del st.session_state.recetas_data[nombre_r]
-                guardar_recetas_nube(st.session_state.recetas_data)
+                del recetas_data[nombre_r]
+                guardar_recetas(recetas_data)
                 st.rerun()
 
     st.write("---")
     st.subheader("➕ Crear Nueva Receta")
     nombre_nueva_receta = st.text_input("Nombre del plato nuevo:").strip().title()
-    ingredientes_disponibles = sorted(list(st.session_state.alacena_data.keys()))
+    ingredientes_disponibles = sorted(list(alacena_data.keys()))
     ings_elegidos = st.multiselect("Selecciona qué ingredientes lleva:", ingredientes_disponibles)
     
     cantidades_ing = {}
@@ -153,16 +134,16 @@ with tab_recetas:
             
     if st.button("💾 Guardar Plato en el Recetario"):
         if nombre_nueva_receta and cantidades_ing:
-            st.session_state.recetas_data[nombre_nueva_receta] = cantidades_ing
-            guardar_recetas_nube(st.session_state.recetas_data)
-            st.success("¡Receta guardada!")
+            recetas_data[nombre_nueva_receta] = cantidades_ing
+            guardar_recetas(recetas_data)
+            st.success("¡Receta guardada de forma permanente!")
             st.rerun()
 
 # ==========================================
 # 3. PESTAÑA: ALACENA
 # ==========================================
 with tab_alacena:
-    st.header("📦 Inventario en la Nube")
+    st.header("📦 Inventario Permanente")
     st.dataframe(df_alacena, use_container_width=True, hide_index=True)
 
     st.write("---")
@@ -171,9 +152,9 @@ with tab_alacena:
         nuevo_ing = st.text_input("Nombre del alimento:").strip().title()
         nueva_cant = st.number_input("Cantidad a sumar:", min_value=1, step=1)
         if st.form_submit_button("Actualizar Alacena") and nuevo_ing:
-            if nuevo_ing in st.session_state.alacena_data:
-                st.session_state.alacena_data[nuevo_ing] += nueva_cant
+            if nuevo_ing in alacena_data:
+                alacena_data[nuevo_ing] += nueva_cant
             else:
-                st.session_state.alacena_data[nuevo_ing] = nueva_cant
-            guardar_alacena_nube(st.session_state.alacena_data)
+                alacena_data[nuevo_ing] = nueva_cant
+            guardar_alacena(alacena_data)
             st.rerun()
