@@ -9,28 +9,28 @@ st.title("🍳 Nuestra Cocina Sincronizada")
 st.write("Conectado en tiempo real a Google Sheets para que ambos editen juntos.")
 
 # --- CONEXIÓN A GOOGLE SHEETS ---
-# Creamos la conexión usando las herramientas nativas de Streamlit
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# Función para leer los datos actualizados de la Alacena
+# Función para leer los datos con diagnóstico de errores en pantalla
 def cargar_alacena():
     try:
-        # Lee la pestaña "Alacena" de tu planilla
-        return conn.read(worksheet="Alacena", ttl="0") # ttl="0" evita que guarde caché vieja
+        # Corregido: ttl ahora es 0 (número) para evitar errores de conexión
+        return conn.read(worksheet="Alacena", ttl=0) 
     except Exception as e:
-        st.error("Error al conectar con la planilla de Google. Revisa las credenciales.")
+        st.error("❌ Error al conectar con la planilla de Google.")
+        # Esto nos va a decir en la pantalla el motivo exacto del fallo:
+        st.info(f"🔍 Detalle técnico del error: {e}")
         return pd.DataFrame(columns=["Ingrediente", "Cantidad"])
-
-# Función para guardar datos en la Alacena de Google Drive
-def guardar_alacena(df):
-    conn.update(worksheet="Alacena", data=df)
 
 # Cargar datos actuales
 df_alacena = cargar_alacena()
 
 # Asegurar que los tipos de datos sean correctos
 if not df_alacena.empty:
-    df_alacena["Cantidad"] = pd.to_numeric(df_alacena["Cantidad"])
+    try:
+        df_alacena["Cantidad"] = pd.to_numeric(df_alacena["Cantidad"])
+    except Exception as e:
+        st.warning("Nota: Hay un problema con el formato de los números en la planilla.")
 
 # --- MENU DE PESTAÑAS ---
 tab_cocina, tab_alacena = st.tabs(["🍳 Cocinar Hoy", "📦 Alacena Compartida"])
@@ -40,13 +40,11 @@ tab_cocina, tab_alacena = st.tabs(["🍳 Cocinar Hoy", "📦 Alacena Compartida"
 # ==========================================
 with tab_alacena:
     st.header("📦 Inventario en la Nube")
-    st.write("Lo que cargues acá lo verá tu pareja al instante.")
     
-    # Mostrar tabla actual
     if not df_alacena.empty:
         st.dataframe(df_alacena, use_container_width=True, hide_index=True)
     else:
-        st.info("La alacena está vacía en Google Sheets.")
+        st.write("Aún no hay datos para mostrar.")
 
     st.write("---")
     st.subheader("➕ Agregar o Reponer Alimentos")
@@ -56,16 +54,14 @@ with tab_alacena:
         nueva_cant = st.number_input("Cantidad a sumar:", min_value=1, step=1)
         btn_alacena = st.form_submit_button("Actualizar en la Nube")
         
-        if btn_alacena and nuevo_ing:
-            # Si ya existe, sumamos el stock. Si no, lo agregamos como fila nueva.
+        if btn_alacena and nuevo_ing and not df_alacena.empty:
             if nuevo_ing in df_alacena["Ingrediente"].values:
                 df_alacena.loc[df_alacena["Ingrediente"] == nuevo_ing, "Cantidad"] += nueva_cant
             else:
                 nueva_fila = pd.DataFrame([{"Ingrediente": nuevo_ing, "Cantidad": nueva_cant}])
                 df_alacena = pd.concat([df_alacena, nueva_fila], ignore_index=True)
             
-            # Subir cambios a Google Sheets
-            guardar_alacena(df_alacena)
+            conn.update(worksheet="Alacena", data=df_alacena)
             st.success(f"¡Sincronizado! Se añadieron {nueva_cant} de '{nuevo_ing}'")
             st.rerun()
 
@@ -75,8 +71,6 @@ with tab_alacena:
 with tab_cocina:
     st.header("🍳 ¿Qué preparamos para comer?")
     
-    # Definimos las recetas base directamente en el código para simplificar,
-    # pero los ingredientes los busca y descuenta del Google Sheets real.
     recetas = {
         "Fideos con Tuco": {"Fideos": 250, "Puré de Tomate": 1, "Cebolla": 1},
         "Arroz con Carne": {"Arroz": 200, "Carne Picada": 300, "Cebolla": 1}
@@ -88,7 +82,6 @@ with tab_cocina:
     st.subheader("📋 Verificación de Stock")
     puede_cocinar = True
     
-    # Diccionario auxiliar para chequear stock fácil
     stock_actual = dict(zip(df_alacena["Ingrediente"], df_alacena["Cantidad"])) if not df_alacena.empty else {}
     
     for ing, cant_req in ingredientes_necesarios.items():
@@ -102,16 +95,14 @@ with tab_cocina:
             
     st.write("---")
     
-    if puede_cocinar:
+    if puede_cocinar and not df_alacena.empty:
         if st.button("🍽️ ¡Hecho! Cocinado", type="primary"):
-            # Restar los ingredientes del DataFrame de Pandas
             for ing, cant_req in ingredientes_necesarios.items():
                 df_alacena.loc[df_alacena["Ingrediente"] == ing, "Cantidad"] -= cant_req
             
-            # Guardar el nuevo inventario reducido en Google Sheets
-            guardar_alacena(df_alacena)
+            conn.update(worksheet="Alacena", data=df_alacena)
             st.balloons()
-            st.success("¡Buen provecho! El stock se descontó de la nube. Tu novia ya lo puede ver actualizado.")
+            st.success("¡Buen provecho! El stock se descontó de la nube.")
             st.rerun()
     else:
-        st.error("Faltan ingredientes en la Alacena para poder realizar este plato.")
+        st.error("No se puede cocinar. Verifica los ingredientes o la conexión con la Alacena.")
